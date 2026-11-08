@@ -108,6 +108,8 @@ empty, the query returns before fetching anything. A lane from another cache's i
 - Message key = MessagePack of the cache key, value = MessagePack of the item, empty value =
   tombstone. Every partition is assigned and read from the start, with no consumer group and no
   committed offsets, so a restart is a full reload.
+- Records are read committed, as Prague (.NET) reads them, so an aborted transaction's records
+  never reach a cache.
 - A re-published, byte-identical value is `Same`. It is detected from a fingerprint of the value
   bytes, before decoding, and is neither stored nor reported.
 - Header filters run before the key is decoded, and all of them must pass: `HeaderFilter::equals`
@@ -124,10 +126,10 @@ empty, the query returns before fetching anything. A lane from another cache's i
   so a changed header is an `Update`.
 - After-handlers fire only once the topic is loaded. A handler that panics is reported through
   `Config::on_error` and the others still run.
-- A topic counts as loaded when the consumer's position on every partition has reached the end
-  offset seen at startup. Position, not the last record seen: transaction markers and compacted-away
-  tail offsets advance it without a record to see. `Loaded::pending()` names the topics still
-  loading.
+- A topic counts as loaded when the consumer's position on every partition has reached the last
+  stable offset seen at startup. Position, not the last record seen: transaction markers and
+  offsets removed by retention advance it without a record to see. `Loaded::pending()` names the
+  topics still loading.
 - A message whose key or value does not decode is reported through `Config::on_error` and skipped.
 - Topic templates resolve `[v:name]` from `Config::vars` and `[e:NAME]` from the environment. A
   missing topic makes `run` fail rather than wait.
