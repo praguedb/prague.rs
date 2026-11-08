@@ -1,0 +1,435 @@
+revision 1;
+
+// A multi-tenant platform's caches: tenancy (operator, brand, site), settings
+// and finance. Tags are the C# [Key(N)] plus one. Members C# marks
+// [IgnoreMember] and fills from a header have no tag. C#'s ushort and uint are
+// int32 and int64 here: MessagePack writes an integer the same way whatever its
+// C# width.
+namespace Tenant;
+
+// --- tenancy: platform.operator / brand / site / settings.cache.v1 ----------
+
+table OperatorInfo
+  [cs: DataCacheTopic("platform.operator.cache.v1")]
+{
+  key uuid id = 1;
+  int32 schema_version [header("schema-version")];
+
+  string         slug               = 2;
+  string         name               = 3;
+  string?        legal_entity       = 4;
+  OperatorStatus status             = 5;
+  Currency       base_currency      = 6;
+  string         base_currency_code = 7;
+  int64          created_at_unix_ms = 8;
+  int64          updated_at_unix_ms = 9;
+}
+
+table BrandInfo
+  [cs: DataCacheTopic("platform.brand.cache.v1")]
+{
+  key uuid id = 1;
+  int32 schema_version [header("schema-version")];
+
+  uuid        operator_id        = 2 [references(OperatorInfo)];
+  string      slug               = 3;
+  string      name               = 4;
+  BrandStatus status             = 5;
+  int64       created_at_unix_ms = 6;
+  int64       updated_at_unix_ms = 7;
+}
+
+table SiteInfo
+  [cs: DataCacheTopic("platform.site.cache.v1")]
+{
+  key uuid id = 1;
+  int32 schema_version [header("schema-version")];
+
+  uuid   brand_id           = 2 [references(BrandInfo)];
+  uuid   operator_id        = 3 [references(OperatorInfo)];
+  string domain             = 4;
+  string slug               = 5;
+  int64  created_at_unix_ms = 6;
+  int64  updated_at_unix_ms = 7;
+  uuid   license_id         = 8;
+}
+
+struct PlatformSettingKey {
+  PlatformSettingType type      = 1;
+  uuid?               tenant_id = 2;
+}
+
+record PasswordLimitRule {
+  PasswordRuleMode mode   = 1;
+  int32?           value  = 2;
+  bool?            locked = 3;
+}
+
+record PasswordPolicySetting {
+  int32             min_length                    = 1;
+  bool              require_uppercase             = 2;
+  bool              require_lowercase             = 3;
+  bool              require_number                = 4;
+  bool              require_symbol                = 5;
+  PasswordLimitRule expiry                        = 6;
+  PasswordLimitRule lockout                       = 7;
+  bool              passkeys_allowed_for_everyone = 8;
+}
+
+table PlatformSetting
+  [cs: DataCacheTopic("platform.settings.cache.v1")]
+{
+  // Tag 5 was a second password policy, since retired: never reuse it.
+  reserved 5;
+
+  key PlatformSettingKey key = 1;
+  int32 schema_version [header("schema-version")];
+  int32 setting_type   [header("setting-type")];
+  uuid  tenant_id      [header("tenant-id")];
+
+  int32                  version            = 2;
+  int64                  updated_at_unix_ms = 3;
+  PasswordPolicySetting? password_policy    = 4;
+}
+
+// --- settings: platform.setting-values.cache.v1 -----------------------------
+
+struct SettingKey {
+  uuid        owner      = 1;
+  SettingGroup group     = 2;
+  SettingCode code       = 3;
+  uuid?       subject_id = 4;
+}
+
+// SettingValue's own MessagePack formatter writes [kind, payload]. A Guid
+// payload is 16 bytes in Guid.TryWriteBytes's layout rather than the string
+// MessagePack-CSharp writes for a Guid member, so it is `bytes` here; an
+// Object payload is a MessagePack map passed through as written.
+union SettingValue of SettingKind {
+  NIL;
+  BOOL   bool;
+  INT    int64;
+  REAL   double;
+  GUID   bytes;
+  STRING string;
+  BYTES  bytes;
+  JSON   string;
+  OBJECT raw;
+}
+
+table Setting
+  [cs: DataCacheTopic("platform.setting-values.cache.v1")]
+{
+  key SettingKey key = 1;
+
+  SettingValue      value              = 2;
+  SettingLock       lock_state         = 3;
+  int32             version            = 4;
+  int64             created_at_unix_ms = 5;
+  int64             updated_at_unix_ms = 6;
+  SettingEntityType entity_type        = 7;
+  SettingOwnerType  owner_type         = 8;
+
+  int32 schema_version     [header("schema-version")];
+  int32 setting_group      [header("setting-group")];
+  int32 setting_code       [header("setting-code")];
+  int32 entity_type_number [header("entity-type")];
+  uuid? operator_id        [header("operator-id")];
+  uuid? brand_id           [header("brand-id")];
+  uuid? site_id            [header("site-id")];
+}
+
+// --- finance: platform.currency / exchange-rate / rate-provider ------------
+
+table CurrencyInfo
+  [cs: DataCacheTopic("finance.currency.cache.v1")]
+{
+  key int32 number = 1; // ushort
+
+  string code             = 2;
+  string name             = 3;
+  string kind             = 4;
+  int32  minor_unit       = 5;
+  int32  storage_exponent = 6;
+  bool   is_enabled       = 7;
+  bool   is_pivot         = 8;
+  string provider         = 9;
+}
+
+table ExchangeRate
+  [cs: DataCacheTopic("finance.exchange-rate.cache.v1")]
+{
+  key int64 pair = 1; // uint
+
+  int32  base                   = 2 [references(CurrencyInfo)]; // ushort
+  int32  quote                  = 3 [references(CurrencyInfo)]; // ushort
+  string base_code              = 4;
+  string quote_code             = 5;
+  int64  rate_mantissa          = 6;
+  int32  rate_scale             = 7;
+  string source                 = 8;
+  string provider               = 9;
+  int64  effective_from_unix_ms = 10;
+  int64  snapshot_id            = 11;
+  int64  rate_id                = 12;
+}
+
+table RateProviderStatus
+  [cs: DataCacheTopic("finance.rate-provider.cache.v1")]
+{
+  key string provider = 1;
+
+  int64 snapshot_id              = 2;
+  int64 vendor_timestamp_unix_ms = 3;
+  int64 next_update_unix_ms      = 4;
+  int64 last_checked_unix_ms     = 5;
+}
+
+// --- enums -------------------------------------------------------------------
+
+enum BrandStatus {
+  NONE = 0;
+  ONBOARDING = 1;
+  ACTIVE = 2;
+  SUSPENDED = 3;
+}
+
+enum OperatorStatus {
+  NONE = 0;
+  PENDING = 1;
+  ACTIVE = 2;
+  SUSPENDED = 3;
+  TERMINATED = 4;
+}
+
+enum PasswordRuleMode {
+  OPERATOR_DECIDES = 0;
+  REQUIRED_FOR_EVERYONE = 1;
+}
+
+enum PlatformSettingType {
+  NONE = 0;
+  PASSWORD_POLICY = 1;
+}
+
+enum Currency {
+  NONE = 0;
+  ALL = 8;
+  DZD = 12;
+  ARS = 32;
+  AUD = 36;
+  BSD = 44;
+  BHD = 48;
+  BDT = 50;
+  AMD = 51;
+  BBD = 52;
+  BMD = 60;
+  BTN = 64;
+  BOB = 68;
+  BWP = 72;
+  BZD = 84;
+  SBD = 90;
+  BND = 96;
+  MMK = 104;
+  BIF = 108;
+  KHR = 116;
+  CAD = 124;
+  CVE = 132;
+  KYD = 136;
+  LKR = 144;
+  CLP = 152;
+  CNY = 156;
+  COP = 170;
+  KMF = 174;
+  CRC = 188;
+  CUP = 192;
+  CZK = 203;
+  DKK = 208;
+  DOP = 214;
+  SVC = 222;
+  ETB = 230;
+  ERN = 232;
+  FKP = 238;
+  FJD = 242;
+  DJF = 262;
+  GMD = 270;
+  GIP = 292;
+  GTQ = 320;
+  GNF = 324;
+  GYD = 328;
+  HTG = 332;
+  HNL = 340;
+  HKD = 344;
+  HUF = 348;
+  ISK = 352;
+  INR = 356;
+  IDR = 360;
+  IRR = 364;
+  IQD = 368;
+  ILS = 376;
+  JMD = 388;
+  JPY = 392;
+  KZT = 398;
+  JOD = 400;
+  KES = 404;
+  KPW = 408;
+  KRW = 410;
+  KWD = 414;
+  KGS = 417;
+  LAK = 418;
+  LBP = 422;
+  LSL = 426;
+  LRD = 430;
+  LYD = 434;
+  MOP = 446;
+  MWK = 454;
+  MYR = 458;
+  MVR = 462;
+  MUR = 480;
+  MXN = 484;
+  MNT = 496;
+  MDL = 498;
+  MAD = 504;
+  OMR = 512;
+  NAD = 516;
+  NPR = 524;
+  XCG = 532;
+  AWG = 533;
+  VUV = 548;
+  NZD = 554;
+  NIO = 558;
+  NGN = 566;
+  NOK = 578;
+  PKR = 586;
+  PAB = 590;
+  PGK = 598;
+  PYG = 600;
+  PEN = 604;
+  PHP = 608;
+  QAR = 634;
+  RUB = 643;
+  RWF = 646;
+  SHP = 654;
+  SAR = 682;
+  SCR = 690;
+  SGD = 702;
+  VND = 704;
+  SOS = 706;
+  ZAR = 710;
+  SSP = 728;
+  SZL = 748;
+  SEK = 752;
+  CHF = 756;
+  SYP = 760;
+  THB = 764;
+  TOP = 776;
+  TTD = 780;
+  AED = 784;
+  TND = 788;
+  UGX = 800;
+  MKD = 807;
+  EGP = 818;
+  GBP = 826;
+  TZS = 834;
+  USD = 840;
+  UYU = 858;
+  UZS = 860;
+  WST = 882;
+  YER = 886;
+  TWD = 901;
+  ZWG = 924;
+  SLE = 925;
+  VED = 926;
+  VES = 928;
+  MRU = 929;
+  STN = 930;
+  BYN = 933;
+  TMT = 934;
+  GHS = 936;
+  SDG = 938;
+  RSD = 941;
+  MZN = 943;
+  AZN = 944;
+  RON = 946;
+  TRY = 949;
+  XAF = 950;
+  XCD = 951;
+  XOF = 952;
+  XPF = 953;
+  ZMW = 967;
+  SRD = 968;
+  MGA = 969;
+  AFN = 971;
+  TJS = 972;
+  AOA = 973;
+  BGN = 975;
+  CDF = 976;
+  BAM = 977;
+  EUR = 978;
+  UAH = 980;
+  GEL = 981;
+  PLN = 985;
+  BRL = 986;
+  BTC = 1001;
+  ETH = 1002;
+  USDT = 1003;
+  USDC = 1004;
+  LTC = 1005;
+  XRP = 1006;
+  TRX = 1007;
+  DOGE = 1008;
+  SOL = 1009;
+  BNB = 1010;
+  ADA = 1011;
+  BCH = 1012;
+}
+
+enum SettingCode {
+  OTHER = 0;
+  SSO_PROVIDER = 100;
+  QUOTA_RESET_UNIT = 201;
+  QUOTA_VALUE_MAX = 204;
+  TRIAL_TERM_MAX = 224;
+  PASSWORD = 300;
+  PASSWORD_MIN_LENGTH = 301;
+  PASSWORD_LOCKOUT = 305;
+}
+
+enum SettingEntityType {
+  NONE = 0;
+  LICENSE = 1;
+  BRAND = 2;
+  SITE = 3;
+}
+
+enum SettingGroup {
+  UNKNOWN = 0;
+  PASSWORD_POLICY = 1;
+  USAGE_QUOTAS = 2;
+}
+
+enum SettingKind {
+  NIL = 0;
+  BOOL = 1;
+  INT = 2;
+  REAL = 3;
+  GUID = 4;
+  STRING = 5;
+  BYTES = 6;
+  JSON = 7;
+  OBJECT = 8;
+}
+
+enum SettingLock {
+  FREE = 0;
+  BOUNDED = 1;
+  LOCKED = 2;
+}
+
+enum SettingOwnerType {
+  NONE = 0;
+  PLATFORM = 1;
+  OPERATOR = 2;
+  BRAND = 3;
+}
+

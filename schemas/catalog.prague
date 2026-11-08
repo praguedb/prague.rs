@@ -1,0 +1,421 @@
+revision 1;
+
+// A live-entertainment catalogue as Prague caches: genres, countries, tours,
+// acts, performers, venues, editions, shows, the ticket-type catalogue and the
+// sets a show runs through, plus each source's ids mapped onto ours. One
+// service writes them; entries are never removed (a retired one keeps
+// is_archived) and are immutable once written.
+//
+// Tags are the C# [Key(N)] plus one. C#'s byte, short and ushort are int32
+// here: MessagePack writes an integer the same way whatever its C# width. A
+// C# float is double here for the same reason on the read side (a reader takes
+// a float32 as a float64). A DateTime is a timestamp and a DateOnly a date.
+namespace Catalog;
+
+// --- enums -------------------------------------------------------------------
+
+enum Gender {
+  UNKNOWN = 0;
+  MALE    = 1;
+  FEMALE  = 2;
+  MIXED   = 3; // acts only (a mixed duo)
+}
+
+enum ActType {
+  BAND       = 1;
+  ENSEMBLE   = 2;
+  SOLO       = 3; // one person performing as an act
+  DUO        = 4;
+}
+
+// Which of our entities a source id stands for.
+enum MappingKind {
+  GENRE     = 0;
+  COUNTRY   = 1;
+  TOUR      = 2;
+  ACT       = 3;
+  PERFORMER = 4;
+  VENUE     = 5;
+  EDITION   = 6;
+  SHOW      = 7;
+}
+
+// How a mapping was made.
+enum MappingMethod {
+  MANUAL   = 0;
+  NAME     = 1;
+  ALIAS    = 2;
+  CREATED  = 3;
+  SCHEDULE = 4; // a show matched by its acts, start time and tour
+  IMPORTED = 5;
+}
+
+// What a source gives us, as flags.
+enum SourceTypes {
+  PRICING = 1;
+  STATE   = 2;
+  DATA    = 4;
+}
+
+// Where a ticket type is sold, as flags: BOTH is presale and on the night.
+enum SaleWindow {
+  PRESALE = 1;
+  LIVE    = 2;
+  BOTH    = 3;
+}
+
+enum SlotRole {
+  HEADLINER = 0;
+  SHARED    = 1;
+  OPENER    = 2;
+  OVER      = 3;
+  UNDER     = 4;
+  YES       = 5;
+  NO        = 6;
+  PICK      = 7;
+}
+
+enum AttributeKind {
+  LONG      = 1;
+  LINE      = 2;
+  SCORE     = 3;
+  TEXT      = 4;
+  PERFORMER = 5;
+  ACT       = 6;
+  SET       = 7;
+}
+
+enum SetKind {
+  PHASE = 1; // a stretch of performance, or a break between two
+  SPAN  = 2; // several phases read as one: the whole show, the encore
+}
+
+// --- knowledge base ----------------------------------------------------------
+
+table GenreInfo
+  [cs: DataCacheTopic("show.genre.cache.v1")]
+{
+  key int32 id = 1;
+
+  string slug        = 2;
+  string name        = 3;
+  bool   is_archived = 4;
+  int32  version     = 5;
+
+  timestamp created_at = 6;
+  timestamp updated_at = 7;
+}
+
+table SourceInfo
+  [cs: DataCacheTopic("show.source.cache.v1")]
+{
+  key int32 id = 1;
+
+  string      name        = 2;
+  bool        is_archived = 3;
+  int32       version     = 4;
+  SourceTypes types       = 7;
+
+  timestamp created_at = 5;
+  timestamp updated_at = 6;
+}
+
+table CountryInfo
+  [cs: DataCacheTopic("show.country.cache.v1")]
+{
+  key int32 id = 1;
+
+  string  name         = 2;
+  bool    is_archived  = 3;
+  int32   version      = 4;
+  string? country_code = 7;
+
+  timestamp created_at = 5;
+  timestamp updated_at = 6;
+}
+
+table TourInfo
+  [cs: DataCacheTopic("show.tour.cache.v1")]
+{
+  key uuid id = 1;
+
+  int32  genre_id    = 2 [references(GenreInfo)];
+  int32  country_id  = 3 [references(CountryInfo)];
+  string name        = 4;
+  bool   is_archived = 5;
+  int32  version     = 6;
+
+  timestamp created_at = 7;
+  timestamp updated_at = 8;
+}
+
+table ActInfo
+  [cs: DataCacheTopic("show.act.cache.v1")]
+{
+  key int64 id = 1;
+
+  int32   genre_id     = 2 [references(GenreInfo)];
+  string  name         = 3;
+  string? short_name   = 4;
+  string? abbreviation = 5;
+  int32?  country_id   = 6;
+  Gender  gender       = 7;
+  string? age_group    = 8;
+  ActType act_type     = 9;
+  bool    is_virtual   = 10;
+  bool    is_archived  = 11;
+  int32   version      = 12;
+
+  timestamp created_at = 13;
+  timestamp updated_at = 14;
+}
+
+table PerformerInfo
+  [cs: DataCacheTopic("show.performer.cache.v1")]
+{
+  key int64 id = 1;
+
+  int32   genre_id      = 2 [references(GenreInfo)];
+  string  name          = 3;
+  string? short_name    = 4;
+  int32?  country_id    = 5;
+  Gender  gender        = 6;
+  date?  date_of_birth = 7;
+  string? role          = 8;
+  bool    is_archived   = 9;
+  int32   version       = 10;
+
+  timestamp created_at = 11;
+  timestamp updated_at = 12;
+}
+
+table VenueInfo
+  [cs: DataCacheTopic("show.venue.cache.v1")]
+{
+  key int64 id = 1;
+
+  string  name        = 2;
+  string? city        = 3;
+  int32?  country_id  = 4;
+  int32?  capacity    = 5;
+  bool    is_archived = 6;
+  int32   version     = 7;
+
+  timestamp created_at = 8;
+  timestamp updated_at = 9;
+}
+
+table EditionInfo
+  [cs: DataCacheTopic("show.edition.cache.v1")]
+{
+  key uuid id = 1;
+
+  uuid    tour_id     = 2 [references(TourInfo)];
+  string  name        = 3;
+  string? year        = 4;
+  date?  start_date  = 5;
+  date?  end_date    = 6;
+  bool    is_archived = 7;
+  int32   version     = 8;
+
+  timestamp created_at = 9;
+  timestamp updated_at = 10;
+}
+
+// One show: two acts of a genre on a tour, at a time and place.
+table ShowInfo
+  [cs: DataCacheTopic("show.show.cache.v1")]
+{
+  key int64 id = 1;
+
+  int32  genre_id     = 2 [references(GenreInfo)];
+  int32  country_id   = 3 [references(CountryInfo)];
+  uuid   tour_id      = 4 [references(TourInfo)];
+  uuid?  edition_id   = 5;
+  int64? venue_id     = 6;
+  int64  headliner_id = 7 [references(ActInfo)];
+  int64  opener_id    = 8 [references(ActInfo)];
+  bool   is_archived  = 11;
+  int32  version      = 12;
+
+  timestamp? scheduled_start = 9;
+  timestamp? scheduled_end   = 10;
+  timestamp created_at = 13;
+  timestamp updated_at = 14;
+}
+
+// --- mappings: a source's ids onto ours, one cache per kind -------------------
+
+// A source's id for an entity: the source and its id, verbatim (src:act:4698).
+struct MappingKey {
+  int32  source_id   = 1;
+  string provider_id = 2;
+}
+
+// Every mapping shares this layout after its target: version at 3, created and
+// updated at 4 and 5, the source's name at 6, how it was made at 7, the
+// mapper's confidence at 8.
+
+table GenreMappingInfo
+  [cs: DataCacheTopic("show.genre-mapping.cache.v1")]
+{
+  key MappingKey key = 1;
+
+  int32         genre_id      = 2;
+  int32         version       = 3;
+  string?       provider_name = 6;
+  MappingMethod method        = 7;
+  double?       score         = 8; // C# float?
+
+  timestamp created_at = 4;
+  timestamp updated_at = 5;
+}
+
+table ActMappingInfo
+  [cs: DataCacheTopic("show.act-mapping.cache.v1")]
+{
+  key MappingKey key = 1;
+
+  int64         act_id        = 2;
+  int32         version       = 3;
+  string?       provider_name = 6;
+  MappingMethod method        = 7;
+  double?       score         = 8; // C# float?
+
+  timestamp created_at = 4;
+  timestamp updated_at = 5;
+}
+
+table EditionMappingInfo
+  [cs: DataCacheTopic("show.edition-mapping.cache.v1")]
+{
+  key MappingKey key = 1;
+
+  uuid          edition_id    = 2;
+  int32         version       = 3;
+  string?       provider_name = 6;
+  MappingMethod method        = 7;
+  double?       score         = 8; // C# float?
+
+  timestamp created_at = 4;
+  timestamp updated_at = 5;
+}
+
+table ShowMappingInfo
+  [cs: DataCacheTopic("show.show-mapping.cache.v1")]
+{
+  key MappingKey key = 1;
+
+  int64         show_id       = 2;
+  int32         version       = 3;
+  string?       provider_name = 6;
+  MappingMethod method        = 7;
+  double?       score         = 8; // C# float?
+
+  timestamp created_at = 4;
+  timestamp updated_at = 5;
+}
+
+// --- ticket-type catalogue ----------------------------------------------------
+
+table TierFamilyInfo
+  [cs: DataCacheTopic("show.tier-family.cache.v1")]
+{
+  key int32 id = 1; // short
+
+  string slug        = 2;
+  string name        = 3;
+  string description = 4;
+  bool   is_archived = 5;
+  int32  version     = 6;
+
+  timestamp created_at = 7;
+  timestamp updated_at = 8;
+}
+
+// A ticket type's slot: its role, and a PICK's label.
+record TicketSlot {
+  SlotRole role = 1;
+  string?  name = 2;
+}
+
+// One attribute a ticket type expects: its name and how it is typed.
+record AttributeField {
+  string        name = 1;
+  AttributeKind kind = 2;
+}
+
+// One genre's ticket type, as its published revision says.
+table TicketTypeInfo
+  [cs: DataCacheTopic("show.ticket-type.cache.v1")]
+{
+  key int64 id = 1;
+
+  int32                genre_id          = 2 [references(GenreInfo)];
+  string               slug              = 3;
+  int32                revision          = 4;
+  string               name              = 5;
+  int32                family_id         = 6 [references(TierFamilyInfo)]; // short
+  SaleWindow           offered           = 7;
+  list<TicketSlot>     slots             = 8;
+  list<AttributeField> line_attributes   = 9;
+  bool                 is_archived       = 11;
+  int32                version           = 12;
+  int32?               set_id            = 15; // short?
+  list<AttributeField> ticket_attributes = 16;
+
+  timestamp published_at = 10;
+  timestamp created_at = 13;
+  timestamp updated_at = 14;
+}
+
+// A set, by its genre and its id within it.
+struct SetKey {
+  int32 genre_id = 1;
+  int32 id       = 2; // short
+}
+
+// A part of a show (opening set, intermission), or several read as one.
+table SetInfo
+  [cs: DataCacheTopic("show.set.cache.v1")]
+{
+  key SetKey key = 1;
+
+  string  slug        = 2;
+  string  name        = 3;
+  string  short_name  = 4;
+  SetKind kind        = 5;
+  bool    is_on_stage = 6;
+  int32   position    = 7; // short
+  bool    is_archived = 8;
+  int32   version     = 9;
+
+  timestamp created_at = 10;
+  timestamp updated_at = 11;
+}
+
+// --- not a cache: a stream of requests to map a source entity ----------------
+
+// "Map this for me": a source entity a service met that no mapping covers.
+// Tag 8 was a held-back show id, since retired: never reuse it.
+record MappingRequest {
+  reserved 8;
+
+  int32       source_id              = 1;
+  MappingKind kind                   = 2;
+  string      provider_id            = 3;
+  string?     name                   = 4;
+  string?     genre_provider_id      = 5;
+  string?     country_provider_id    = 6;
+  string?     tour_provider_id       = 7;
+  string?     country_code           = 9;
+  string?     year                   = 10;
+  string?     city                   = 11;
+  int32?      capacity               = 12;
+  string?     headliner_provider_id  = 13;
+  string?     opener_provider_id     = 14;
+  string?     edition_provider_id    = 15;
+  string?     venue_provider_id      = 16;
+  int64       start_time_unix_ms     = 17;
+  int64       end_time_unix_ms       = 18;
+}

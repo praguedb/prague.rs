@@ -1,0 +1,175 @@
+revision 1;
+
+// A source integration's output caches: each source's view of a show, its live
+// state, and its ticket types with their tier lines and quotes. All of a show's
+// rows sit on one partition. Ids are the catalogue's (catalog.prague).
+//
+// Tags are the C# [Key(N)] plus one; byte and ushort are int32, float is
+// double, as in catalog.prague. Two members have no protop spelling yet and
+// are reserved where they sit:
+//   - SourceStamps, the highest source time a row has taken per producer, is
+//     the MessagePack map {producer: unix ms}; `map` is PROTOP0900.
+//   - A tier line's attributes are each one MessagePack value whose type is
+//     its kind (an integer, a float, [a, b], a string, 16 bytes), with no kind
+//     written. `raw` would carry them, but is a union arm's payload only.
+namespace ShowFeed;
+
+enum ShowStatus {
+  SCHEDULED   = 0;
+  LIVE        = 1;
+  SUSPENDED   = 2;
+  ENDED       = 3;
+  CLOSED      = 4;
+  CANCELLED   = 5;
+  POSTPONED   = 6;
+  ABANDONED   = 7;
+  INTERRUPTED = 8;
+  DELAYED     = 9;
+  STARTED     = 10;
+  UNKNOWN     = 255;
+}
+
+enum SaleStatus {
+  OPEN        = 0;
+  SUSPENDED   = 1;
+  DEACTIVATED = 2;
+  SETTLED     = 3;
+  CANCELLED   = 4;
+}
+
+// A ticket type is sold before the show or on the night, never both.
+enum SaleStage {
+  PRESALE = 0;
+  LIVE    = 1;
+}
+
+// Whether a source's feed for a stage can be trusted.
+enum SourceState {
+  UP         = 0;
+  DOWN       = 1;
+  RECOVERING = 2;
+}
+
+enum QuoteStatus {
+  ACTIVE    = 0;
+  INACTIVE  = 1;
+  WON       = 2;
+  LOST      = 3;
+  VOID      = 4;
+  HALF_WON  = 5;
+  HALF_LOST = 6;
+}
+
+enum LineSettlement {
+  NONE        = 0;
+  SETTLED     = 1;
+  ROLLED_BACK = 2;
+}
+
+enum SettlementCertainty {
+  NONE         = 0;
+  LIVE_SCOUTED = 1;
+  CONFIRMED    = 2;
+}
+
+// One source's view of one show: [source, show_id].
+struct ShowKey {
+  int32 source  = 1; // ushort
+  int64 show_id = 2;
+}
+
+// One source's ticket type on one show: [source, show_id, ticket_type_id].
+struct TicketTypeKey {
+  int32 source         = 1; // ushort
+  int64 show_id        = 2;
+  int32 ticket_type_id = 3;
+}
+
+table SourceShowInfo
+  [cs: DataCacheTopic("show.source.show.cache.v1")]
+{
+  // 11: SourceStamps -- a map, PROTOP0900.
+  reserved 11;
+
+  key ShowKey key = 1;
+
+  int64      show_id            = 2;
+  int32      genre_id           = 3;
+  int32      country_id         = 4;
+  uuid       tour_id            = 5;
+  int64      start_time_unix_ms = 6;
+  ShowStatus status             = 7;
+  int64      headliner_id       = 8;
+  int64      opener_id          = 9;
+  string     provider_show_id   = 10;
+}
+
+struct SetScore {
+  int32 number    = 1;
+  int32 headliner = 2;
+  int32 opener    = 3;
+}
+
+// A source's feed health for one stage, on the live topic in a row of its own
+// keyed [source, -1 - stage]; null on every show row.
+struct StageHealth {
+  SaleStage   stage         = 1;
+  SourceState state         = 2;
+  int64       since_unix_ms = 3;
+}
+
+// The often-changing state of a show in progress. -1 marks a figure the source
+// did not give.
+table SourceLiveShowInfo
+  [cs: DataCacheTopic("show.source.live-show.cache.v1")]
+{
+  // 10: SourceStamps -- a map, PROTOP0900.
+  reserved 10;
+
+  key ShowKey key = 1;
+
+  int64          show_id         = 2;
+  ShowStatus     status          = 3;
+  int32          status_code     = 4;
+  int32          headliner_score = 5;
+  int32          opener_score    = 6;
+  list<SetScore> sets            = 7;
+  int32          clock_seconds   = 8;
+  StageHealth?   health          = 9;
+}
+
+// One quote: its price (0 when the source gave none) and status. Which slot it
+// is, is its position in the line.
+record Quote {
+  double      price  = 1; // C# float
+  QuoteStatus status = 2;
+}
+
+// One line of a ticket type: [slot, [attributes], status, [[price, status],
+// ...], favourite, settlement, certainty]. Tags 5 to 7 were appended after the
+// first rows shipped; a row written without them reads as their zero.
+record TierLine {
+  // 2: the attributes, typed by MessagePack type -- `raw` is a union arm's
+  // payload only (PROTOP0327).
+  reserved 2;
+
+  int32               slot       = 1; // byte
+  SaleStatus          status     = 3;
+  list<Quote>         quotes     = 4;
+  bool                favourite  = 5;
+  LineSettlement      settlement = 6;
+  SettlementCertainty certainty  = 7;
+}
+
+table SourceTicketTypeInfo
+  [cs: DataCacheTopic("show.source.ticket-type.cache.v1")]
+{
+  // 5: SourceStamps -- a map, PROTOP0900.
+  reserved 5;
+
+  key TicketTypeKey key = 1;
+
+  int64          show_id = 2;
+  SaleStage      stage   = 3;
+  list<TierLine> lines   = 4;
+}

@@ -1,0 +1,64 @@
+revision 1;
+
+// The interop schema: one source for both sides of the wire test. praguec
+// compiles it to C# (which writes fixtures with Prague's own serializer) and
+// to Go (internal/shop, which must read them).
+namespace Shop;
+
+enum Status {
+  UNKNOWN  = 0;
+  ACTIVE   = 1;
+  RETIRED  = 2;
+}
+
+struct Dimensions {
+  double width  = 1;
+  double height = 2;
+}
+
+record Price {
+  string     currency = 1;
+  decimal(4) amount   = 2;
+}
+
+table Product {
+  reserved 4..6;
+
+  key int64 id = 1;
+
+  string      name     = 2;
+  string?     brand    = 3;
+  Status      status   = 7;
+  Status?     override = 8;
+  int64       released = 9;
+  int32?      stock    = 10;
+  decimal(4)? discount = 11;
+  Dimensions? size     = 12;
+  list<Price> prices   = 13;
+  list<string> tags    = 14;
+  bool        published = 15;
+
+  // Written from Kafka headers the producer stamps. The writer carries these
+  // members at tags 19 and 20, which this reader skips, so a value here can
+  // only have come from the header.
+  string      region    = 18 [header("x-region")];
+  int32       tier      = 21 [header];
+}
+
+table Offer {
+  key key = 1 (product_id, offer_id);
+
+  int64  product_id = 2 [references(Product)];
+  int64  id         = 3;
+  alias  offer_id   = id;
+
+  Price  price      = 4;
+  int64  updated_at = 5;
+  int64  stamped_at = 6 [from_timestamp];
+}
+
+view SlimProduct of Product {
+  id;
+  name;
+  status;
+}

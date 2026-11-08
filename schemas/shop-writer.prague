@@ -1,0 +1,77 @@
+revision 1;
+
+// The producer's side of the interop test, deliberately out of step with the
+// reader (shop.prague) in both directions:
+//
+//   ahead  -- members the reader has never heard of: Product tags 16 and 17,
+//             Price tag 3, Dimensions tag 3.
+//   headers -- Product's region and tier, which Prague also stamps as
+//             headers; the reader takes them from the headers, at tags of
+//             its own.
+//   behind -- members at Product tags 4..6, which the reader has since
+//             reserved. A topic is compacted, not rewritten, so old records
+//             still carry them.
+//
+// Every shared tag has the reader's type, which is what wire compatibility
+// means here: the Go types generated from shop.prague must read these bytes
+// and skip the rest. These are real Prague caches; Program.cs produces them
+// through AddOrUpdateAndProduce / RemoveAndProduce.
+namespace ShopWriter;
+
+enum Status {
+  UNKNOWN  = 0;
+  ACTIVE   = 1;
+  RETIRED  = 2;
+}
+
+struct Dimensions {
+  double width  = 1;
+  double height = 2;
+  double depth  = 3;
+}
+
+record Price {
+  string     currency = 1;
+  decimal(4) amount   = 2;
+  string?    note     = 3;
+}
+
+table Product
+  [cs: DataCache]
+  [cs: DataCacheTopic("Cache.[v:tenant].Product")]
+{
+  key int64 id = 1;
+
+  string      name      = 2;
+  string?     brand     = 3;
+  int64       legacy_a  = 4;
+  string?     legacy_b  = 5;
+  list<int64> legacy_c  = 6;
+  Status      status    = 7;
+  Status?     override  = 8;
+  int64       released  = 9;
+  int32?      stock     = 10;
+  decimal(4)? discount  = 11;
+  Dimensions? size      = 12;
+  list<Price> prices    = 13;
+  list<string> tags     = 14;
+  bool        published = 15;
+  string?     sku       = 16;
+  list<Price> history   = 17;
+  string      region    = 19 [header("x-region")];
+  int32       tier      = 20 [header];
+}
+
+table Offer
+  [cs: DataCache]
+  [cs: DataCacheTopic("Cache.[v:tenant].Offer")]
+{
+  key key = 1 (product_id, offer_id);
+
+  int64  product_id = 2;
+  int64  id         = 3;
+  alias  offer_id   = id;
+
+  Price  price      = 4;
+  int64  updated_at = 5;
+}
