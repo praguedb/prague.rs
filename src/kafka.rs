@@ -175,6 +175,9 @@ impl Consumer {
             ("group.protocol".into(), "consumer".into()),
             ("enable.auto.commit".into(), "false".into()),
             ("auto.offset.reset".into(), "earliest".into()),
+            // Prague (.NET) reads committed: an aborted transaction's records
+            // never reach a cache, and end_offsets is the last stable offset.
+            ("isolation.level".into(), "read_committed".into()),
             ("allow.auto.create.topics".into(), "false".into()),
         ]);
         props.extend(self.cfg.properties.clone());
